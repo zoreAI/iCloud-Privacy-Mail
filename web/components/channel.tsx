@@ -1,0 +1,1 @@
+export function Channel({value,onChange,disabled=false}:{value:string;onChange:(value:string)=>void;disabled?:boolean}){return <select aria-label="接口选择" value={value} disabled={disabled} onChange={e=>onChange(e.target.value)}><option value="auto">自动接口 · 新接口优先</option><option value="apple_account">只用新接口</option><option value="icloud_web">只用旧接口</option></select>}

@@ -989,6 +989,10 @@ func (c *AppleAuthClient) do(ctx context.Context, session *appleAuthSession, met
 		return resp.StatusCode, data, nil
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		if resp.StatusCode >= 500 {
+			endpoint, _ := url.Parse(rawURL)
+			return resp.StatusCode, nil, errCode("apple_protocol_http_error", fmt.Sprintf("Apple 协议 HTTP %d；阶段：%s %s；请稍后重试", resp.StatusCode, method, endpoint.Path), true)
+		}
 		return resp.StatusCode, nil, errCode("apple_protocol_http_error", fmt.Sprintf("Apple 协议 HTTP %d: %s", resp.StatusCode, trimForError(data)), true)
 	}
 	if out != nil && len(bytes.TrimSpace(data)) > 0 {

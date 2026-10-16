@@ -332,6 +332,29 @@ Authorization: Bearer <api_key>
 - 普通用户只能导出自己的登录态和隐私邮箱；管理员可导出全量数据。
 - 导出文件包含 iCloud Cookie 和邮箱 API token，属于敏感文件，不要发给无关人员。
 
+### 删除远端隐私邮箱
+
+邮箱行统一使用“删除邮箱”按钮，下拉可选“自动接口／只用新接口／只用旧接口”，分别传入 `channel=auto`、`channel=apple_account`、`channel=icloud_web`。指定渠道缺少登录态时直接报错，不切换另一接口。确认弹窗明确说明远端地址及本地记录、API、验证码缓存的删除范围。
+
+邮箱列表的“删除邮箱”调用 `DELETE /api/mailboxes/{id}/remote`。自动接口优先使用该邮箱绑定账号的 Apple Account 新登录态；没有可用新登录态，或新接口删除失败且旧登录态可用时，会尝试旧 iCloud Web 接口。两个渠道都失败时保留本地记录并返回错误。
+
+对外删除 API 使用全局 `api_key`，按邮箱地址删除且要求本地唯一匹配：
+
+```http
+DELETE /api/v1/mailboxes/alias%40icloud.com?channel=auto
+Authorization: Bearer <api_key>
+```
+
+`channel` 支持 `auto`、`apple_account`、`icloud_web` 和 `local`。前三种会调用对应远端删除流程，成功后清理本地记录；`local` 仅清理本地记录，适用于已在 iCloud 手动删除的地址。邮箱在本地不存在返回 `404`，存在重复地址返回 `409`，以免删除错误记录。该接口使用和自动取号相同的全局 API Key。
+
+新接口先读取邮箱详情核对 ID、邮箱地址和状态，活跃地址依次执行 `DELETE /account/manage/email/private/{id}/stop`、`DELETE /account/manage/email/private/{id}/remove`，无请求体。已停用地址直接 remove。停用返回的新 scnt、Cookie 用于删除请求并保存；两个写请求不自动重试。新创建邮箱保存 `apple_account_id`，历史记录通过新接口列表中明确的 `id/emailAddress` 字段匹配；无法识别列表结构时保留记录并报错，不猜测 ID。列表兼容解析仍需真实响应验证。
+
+删除前实时查询 `/v2/hme/list`，按邮箱地址唯一匹配该账号的 `anonymousId`，不使用本地邮箱 ID 或推定新旧接口 ID 相同。活跃地址先 `POST /v1/hme/deactivate`，再 `POST /v1/hme/delete`，请求体均为 `{"anonymousId":"远端标识"}`。已停用地址直接执行删除。
+
+远端删除确认成功后才清理本地邮箱及验证码缓存。停用成功但删除失败时，本地记录保留并停用 API，可再次尝试；远端不存在或无法唯一匹配时不会自动清理本地记录。页面不再提供单独删除本地 API 的按钮。
+
+两个写请求不自动重试。响应沿用现有 iCloud `success/result/error` 解析，实际响应格式仍需真实账号联调确认。
+
 ### 邮箱 API token 稳定性
 
 每个邮箱的 API token 存在 `data_path` 的 `mailboxes[].api_token` 字段里：

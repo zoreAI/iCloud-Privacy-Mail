@@ -849,6 +849,10 @@
     .status-used { color: var(--warn); border-color: var(--warn-line); background: var(--warn-soft); }
     .status-available, .status-active { color: var(--ok); }
     .row-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+    #mailboxBatchToolbar { background: var(--input-bg); border: 1px solid var(--line); border-radius: 10px; margin: 12px 18px; padding: 12px; }
+    #mailboxBatchToolbar select { width: auto; max-width: 100%; }
+    #mailboxBatchProgress, #mailboxBatchDetails { margin: 10px 18px; overflow-wrap: anywhere; }
+    #mailboxes tr:has(input[type="checkbox"]:checked) { background: color-mix(in srgb, var(--green) 9%, var(--card)); }
     .row-actions button, .row-actions select { width: auto; min-width: 0; padding: 8px 10px; border-radius: 8px; font-size: 12px; }
     .copy-menu-wrap {
       display: inline-flex;
@@ -1117,25 +1121,7 @@
         </div>
         <div class="content-actions">
           <div class="appearance-controls" aria-label="界面设置">
-            <label class="theme-select" aria-label="界面风格">
-              <span>主题</span>
-              <select id="themeSelect" onchange="setTheme(this.value)">
-                <optgroup label="浅色">
-                  <option value="mint">清透薄荷</option>
-                  <option value="sky">蓝调</option>
-                  <option value="graphite">灰阶</option>
-                  <option value="sunset">暮光暖橘</option>
-                  <option value="violet">紫晶</option>
-                  <option value="rose">绯樱</option>
-                  <option value="forest">森野</option>
-                </optgroup>
-                <optgroup label="深色">
-                  <option value="midnight">暗夜</option>
-                  <option value="obsidian">曜石</option>
-                  <option value="aurora">极光</option>
-                </optgroup>
-              </select>
-            </label>
+
             <div class="segmented" role="group" aria-label="显示密度">
               <button type="button" data-density-option="comfortable" onclick="setDensity('comfortable')">舒展</button>
               <button type="button" data-density-option="compact" onclick="setDensity('compact')">紧凑</button>
@@ -1289,13 +1275,30 @@
         <section class="view-section panel" data-view="mailboxes">
           <div class="panel-head">
             <h2>隐私邮箱池</h2>
-            <p>复制 API、取验证码、同步邮件和修改状态。</p>
+            <p>查看创建时间、复制 API、取验证码；勾选当前页邮箱可批量操作。</p>
           </div>
           <div class="toolbar list-toolbar">
             <label class="search-field">全局搜索邮箱
               <input id="mailboxSearch" placeholder="输入完整或部分邮箱，跨全部页搜索" oninput="setMailboxSearch()">
             </label>
             <div class="mailbox-filter-row">
+              <label class="mailbox-filter-field">邮箱状态
+                <select id="mailboxStatusFilter" onchange="setMailboxStatusFilter()">
+                  <option value="all">全部状态</option>
+                  <option value="available">可用</option>
+                  <option value="used">已使用</option>
+                  <option value="active">活跃</option>
+                  <option value="disabled">已停用</option>
+                  <option value="failed">失败</option>
+                </select>
+              </label>
+              <label class="mailbox-filter-field">创建日期从（北京时间）
+                <input id="mailboxCreatedFrom" type="date" onchange="setMailboxDateRange()">
+              </label>
+              <label class="mailbox-filter-field">至（含当天）
+                <input id="mailboxCreatedTo" type="date" onchange="setMailboxDateRange()">
+              </label>
+              <button onclick="clearMailboxDateRange()">清空时间</button>
               <label class="mailbox-filter-field">同步范围
                 <select id="mailboxSyncAccount" title="同步登录态">
                   <option value="">全部登录态</option>
@@ -1319,9 +1322,34 @@
             </div>
           </div>
           <div id="mailboxAccountTabs" class="account-tabs"></div>
+          <div class="toolbar" id="mailboxBatchToolbar">
+            <strong id="mailboxSelectionCount">已选 0 个</strong>
+            <button data-batch-control onclick="selectMailboxPage(true)">全选当前页</button>
+            <button data-batch-control onclick="selectMailboxPage(false)">取消选择</button>
+            <button data-batch-control onclick="copySelectedMailboxes()">复制已选邮箱</button>
+            <select id="mailboxBatchAction" data-batch-control aria-label="批量操作">
+              <option value="clean_messages">删除邮件</option>
+              <option value="disabled">停用 API</option>
+              <option value="used">标记已使用</option>
+              <option value="available">标记可用</option>
+              <option value="failed">标记失败</option>
+              <option value="delete">删除邮箱</option>
+            </select>
+            <select id="mailboxBatchChannel" data-batch-control aria-label="批量删除接口">
+              <option value="auto">自动接口</option>
+              <option value="local">仅清理本地记录 · 远端不操作</option>
+              <option value="apple_account">只用新接口</option>
+              <option value="icloud_web">只用旧接口</option>
+            </select>
+            <button data-batch-control class="danger" onclick="runMailboxBatch()">执行批量操作</button>
+            <button id="mailboxBatchStop" hidden onclick="mailboxBatchStop = true; this.disabled = true">停止后续操作</button>
+          </div>
+          <p class="muted">选择仅限当前页，翻页或更改筛选后清空。创建时间为本平台创建／导入记录的时间。</p>
+          <div id="mailboxBatchProgress" role="status" aria-live="polite"></div>
+          <details id="mailboxBatchDetails" hidden><summary>批量处理明细</summary><pre id="mailboxBatchResults" style="white-space:pre-wrap;overflow-wrap:anywhere"></pre></details>
           <div class="table-wrap">
             <table>
-              <thead><tr><th>标签</th><th>邮箱</th><th>状态</th><th>收件</th><th>验证码</th><th>操作</th></tr></thead>
+              <thead><tr><th><input id="mailboxSelectAll" type="checkbox" aria-label="全选当前页邮箱" onchange="selectMailboxPage(this.checked)"></th><th>标签</th><th>邮箱</th><th>创建时间</th><th>状态</th><th>收件</th><th>验证码</th><th>操作</th></tr></thead>
               <tbody id="mailboxes"></tbody>
             </table>
           </div>
@@ -1382,6 +1410,11 @@
     const sessionCheckEnabledStorage = 'ipm_session_check_enabled';
     const sessionCheckMinutesStorage = 'ipm_session_check_minutes';
     let lastMailboxes = [];
+    const selectedMailboxIDs = new Set();
+    let mailboxSelectionQuery = '';
+    let mailboxBatchRunning = false;
+    let mailboxBatchStop = false;
+    let mailboxLoadSequence = 0;
     let lastMailboxGroups = [];
     let lastMailboxPagination = {page: 1, page_size: 10, total: 0, total_all: 0, total_pages: 1};
     let lastICloudSessions = [];
@@ -2489,16 +2522,51 @@
         page_size: String(Math.max(1, mailboxPageSize))
       });
       const keyword = ($('mailboxSearch') ? $('mailboxSearch').value : '').trim();
+      const status = $('mailboxStatusFilter').value;
+      const from = $('mailboxCreatedFrom').value;
+      const to = $('mailboxCreatedTo').value;
+      if (from && to && from > to) throw new Error('开始日期不能晚于结束日期');
+      if (from) params.set('created_from', from);
+      if (to) params.set('created_to', to);
       if (keyword) params.set('search', keyword);
-      if (!keyword && activeMailboxAccountKey && activeMailboxAccountKey !== 'all') {
+      if (status && status !== 'all') params.set('status', status);
+      if (activeMailboxAccountKey && activeMailboxAccountKey !== 'all') {
         params.set('account_key', activeMailboxAccountKey);
       }
       return params;
     }
 
+    function setMailboxDateRange() {
+      const from = $('mailboxCreatedFrom').value;
+      const to = $('mailboxCreatedTo').value;
+      if (from && to && from > to) { alert('开始日期不能晚于结束日期'); return; }
+      mailboxPage = 1;
+      selectedMailboxIDs.clear();
+      loadMailboxPage().catch(err => alert('时间筛选失败：' + err.message));
+    }
+
+    function setMailboxStatusFilter() {
+      mailboxPage = 1;
+      selectedMailboxIDs.clear();
+      loadMailboxPage().catch(err => log('状态筛选失败：' + err.message));
+    }
+
+    function clearMailboxDateRange() {
+      $('mailboxCreatedFrom').value = '';
+      $('mailboxCreatedTo').value = '';
+      setMailboxDateRange();
+    }
+
     async function loadMailboxPage(options = {}) {
-      const data = await api('/api/mailboxes?' + mailboxListQuery().toString());
+      const sequence = ++mailboxLoadSequence;
+      const query = mailboxListQuery().toString();
+      const data = await api('/api/mailboxes?' + query);
+      if (sequence !== mailboxLoadSequence) return;
+      if (query !== mailboxSelectionQuery) selectedMailboxIDs.clear();
+      mailboxSelectionQuery = query;
       lastMailboxes = data.mailboxes || [];
+      const visibleIDs = new Set(lastMailboxes.map(row => row.id));
+      for (const id of selectedMailboxIDs) if (!visibleIDs.has(id)) selectedMailboxIDs.delete(id);
       lastMailboxGroups = data.groups || [];
       lastMailboxPagination = data.pagination || {
         page: mailboxPage,
@@ -2532,21 +2600,24 @@
       }
       if ($('mailboxPrevPage')) $('mailboxPrevPage').disabled = page <= 1;
       if ($('mailboxNextPage')) $('mailboxNextPage').disabled = page >= totalPages;
+      updateMailboxSelection();
       if (rows.length === 0) {
-        $('mailboxes').innerHTML = '<tr><td colspan="6" class="muted">没有匹配的邮箱</td></tr>';
+        $('mailboxes').innerHTML = '<tr><td colspan="8" class="muted">没有匹配的邮箱</td></tr>';
         return;
       }
       let lastGroup = '';
       $('mailboxes').innerHTML = rows.map(row => {
         const group = mailboxAccountTitle(row);
         const groupRow = group !== lastGroup
-          ? `<tr class="account-group"><td colspan="6">Apple 账号：${esc(group)}</td></tr>`
+          ? `<tr class="account-group"><td colspan="8">Apple 账号：${esc(group)}</td></tr>`
           : '';
         lastGroup = group;
         return `${groupRow}
           <tr>
+            <td><input type="checkbox" aria-label="选择 ${esc(row.email)}" ${selectedMailboxIDs.has(row.id) ? 'checked' : ''} ${mailboxBatchRunning ? 'disabled' : ''} onchange="toggleMailboxSelection('${row.id}', this.checked)"></td>
             <td><div class="mail-title">${esc(row.label || '-')}</div><span class="muted">${esc(row.id)}</span></td>
             <td><span class="email">${esc(row.email)}</span></td>
+            <td style="white-space:nowrap">${esc(mailboxCreatedTime(row.created_at))}</td>
             <td>
               <span class="pill ${row.api_active ? '' : 'off'}">API ${row.api_active ? 'active' : 'off'}</span>
               <span class="pill ${row.icloud_active ? '' : 'off'}">iCloud ${row.icloud_active ? 'active' : 'off'}</span>
@@ -2554,7 +2625,7 @@
             </td>
             <td>${row.receive_count || 0}</td>
             <td class="mailbox-code-cell">${renderMailboxCodeCell(row.id)}</td>
-            <td><div class="row-actions">
+            <td><fieldset class="row-actions" style="border:0;padding:0;margin:0;min-width:0" ${mailboxBatchRunning ? 'disabled' : ''}>
               <span class="copy-menu-wrap">
                 <button onclick="toggleCopyMenu('${row.id}')">API 地址</button>
                 ${renderMailboxCopyMenu(row.id)}
@@ -2570,8 +2641,14 @@
                 <option value="disabled">停用</option>
               </select>
               <button onclick="disableMailbox('${row.id}')">停用 API</button>
-              <button class="danger" onclick="deleteMailbox('${row.id}')">删除 API</button>
-            </div>
+              <select id="deleteChannel-${esc(row.id)}" aria-label="删除方式">
+                <option value="auto">自动接口</option>
+                <option value="local">仅清理本地记录 · 远端不操作</option>
+                <option value="apple_account">只用新接口</option>
+                <option value="icloud_web">只用旧接口</option>
+              </select>
+              <button class="danger" onclick="deleteMailbox('${row.id}', this)">删除邮箱</button>
+            </fieldset>
             </td>
           </tr>`;
       }).join('');
@@ -2579,6 +2656,106 @@
 
     function mailboxAccountTitle(row) {
       return row.account_label || row.account_apple_id || row.account_id || '未绑定 Apple 账号';
+    }
+
+    function mailboxCreatedTime(value) {
+      const date = new Date(value);
+      return value && !Number.isNaN(date.getTime()) ? date.toLocaleString('zh-CN', {hour12:false, timeZone:'Asia/Shanghai'}) : '—';
+    }
+
+    function updateMailboxSelection() {
+      $('mailboxSelectionCount').textContent = `已选 ${selectedMailboxIDs.size} 个（当前页）`;
+      const all = $('mailboxSelectAll');
+      all.checked = lastMailboxes.length > 0 && selectedMailboxIDs.size === lastMailboxes.length;
+      all.indeterminate = selectedMailboxIDs.size > 0 && !all.checked;
+      all.disabled = mailboxBatchRunning || !lastMailboxes.length;
+      document.querySelectorAll('[data-batch-control]').forEach(el => { el.disabled = mailboxBatchRunning; });
+      $('mailboxBatchStop').hidden = !mailboxBatchRunning;
+    }
+
+    function toggleMailboxSelection(id, checked) {
+      if (mailboxBatchRunning) return;
+      if (checked) selectedMailboxIDs.add(id); else selectedMailboxIDs.delete(id);
+      updateMailboxSelection();
+    }
+
+    function selectMailboxPage(checked) {
+      if (mailboxBatchRunning) return;
+      selectedMailboxIDs.clear();
+      if (checked) lastMailboxes.forEach(row => selectedMailboxIDs.add(row.id));
+      renderMailboxes();
+    }
+
+    async function copySelectedMailboxes() {
+      const rows = lastMailboxes.filter(row => selectedMailboxIDs.has(row.id));
+      if (!rows.length) { alert('请先勾选邮箱'); return; }
+      try { await writeClipboard(rows.map(row => row.email).join('\n')); $('mailboxBatchProgress').textContent = `已复制 ${rows.length} 个邮箱`; }
+      catch (err) { $('mailboxBatchProgress').textContent = '复制失败：' + err.message; }
+    }
+
+    async function runMailboxBatch() {
+      if (mailboxBatchRunning) return;
+      const rows = lastMailboxes.filter(row => selectedMailboxIDs.has(row.id)).map(row => ({...row}));
+      if (!rows.length) { alert('请先勾选邮箱'); return; }
+      const action = $('mailboxBatchAction').value;
+      const channel = $('mailboxBatchChannel').value;
+      const label = $('mailboxBatchAction').selectedOptions[0].textContent;
+      const mode = $('mailboxBatchChannel').selectedOptions[0].textContent;
+      const scope = action === 'delete'
+        ? (channel === 'local' ? '仅清理本地邮箱记录、API 及缓存邮件，不调用 Apple 接口，不删除远端地址或邮件。本地清理不可恢复。' : `接口：${mode}。永久删除远端地址，成功后清理本地记录、API 及验证码缓存；失败保留记录。自动接口先用新接口，失败后尝试旧接口。此操作不可恢复。`)
+        : action === 'clean_messages'
+        ? '每个邮箱先执行一次完整邮件同步，再将同步到的远端邮件移入废纸篓，并清空对应 Apple 账号的整个 iCloud 废纸篓（包括其中其他邮件）。永久删除不可恢复。保留邮箱地址、本地记录及验证码缓存；此操作使用旧 iCloud Web 登录态，新旧删除接口选择不适用于邮件清理。'
+        : '仅修改本地状态和 API 可用性，不停用或删除远端地址。标记可用会重新启用本地 API。';
+      if (!confirm(`${label}：已选 ${rows.length} 个邮箱\n${scope}\n\n${rows.map(row => row.email).join('\n')}`)) return;
+      mailboxBatchRunning = true;
+      mailboxBatchStop = false;
+      $('mailboxBatchStop').disabled = false;
+      $('mailboxBatchDetails').hidden = false;
+      $('mailboxBatchResults').textContent = '';
+      renderMailboxes();
+      let success = 0, failed = 0;
+      const report = [];
+      try {
+        for (const row of rows) {
+          if (mailboxBatchStop) {
+            report.push('已停止后续操作');
+            $('mailboxBatchResults').textContent = report.join('\n');
+            break;
+          }
+          $('mailboxBatchProgress').textContent = `处理中 ${success + failed + 1}/${rows.length}：${row.email}`;
+          try {
+            const base = `/api/mailboxes/${encodeURIComponent(row.id)}`;
+            let detail = '';
+            if (action === 'delete') {
+              await api(base + (channel === 'local' ? '' : '/remote?channel=' + encodeURIComponent(channel)), {method:'DELETE'});
+              detail = channel === 'local' ? '：本地记录已清理，远端未操作' : '：远端地址及本地记录已删除';
+            }
+            else if (action === 'clean_messages') {
+              $('mailboxBatchProgress').textContent = `同步后清理 ${success + failed + 1}/${rows.length}：${row.email}`;
+              const synced = await api(base + '/sync?keyword=__all__', {method:'POST', body:'{}'});
+              const data = await api(base + '/remote-clean', {method:'POST', body:JSON.stringify({move_synced:true, empty_trash:true})});
+              const cleanup = data.cleanup || {};
+              detail = `：同步 ${synced.synced || 0}，移入废纸篓 ${cleanup.moved_to_trash || 0}，清空废纸篓 ${cleanup.destroyed || 0}，跳过 ${cleanup.skipped || 0}`;
+            }
+            else if (action === 'disabled') await api(base + '/disable', {method:'POST', body:'{}'});
+            else await api(base + '/status', {method:'POST', body:JSON.stringify({status:action, ...(action === 'available' ? {api_active:true} : {}), note:'面板批量改状态'})});
+            success++;
+            selectedMailboxIDs.delete(row.id);
+            report.push(`成功 ${row.email}${detail}`);
+          } catch (err) {
+            failed++;
+            const message = err && err.message ? err.message : String(err);
+            report.push(`失败 ${row.email}：${message}`);
+            $('mailboxBatchProgress').textContent = `第 ${success + failed}/${rows.length} 个失败：${row.email}；${message}`;
+          }
+          $('mailboxBatchResults').textContent = report.join('\n');
+        }
+      } finally {
+        mailboxBatchRunning = false;
+        $('mailboxBatchProgress').textContent = `${label}结束：成功 ${success}，失败 ${failed}，未处理 ${rows.length-success-failed}`;
+        renderMailboxes();
+        try { await loadMailboxPage({silent:true}); } catch (err) { $('mailboxBatchProgress').textContent += '；刷新失败：' + err.message; }
+      }
     }
 
     function verifyButtonText(id) {
@@ -3101,11 +3278,29 @@
       await refresh();
     }
 
-    async function deleteMailbox(id) {
-      if (!confirm('确认删除这个 API 绑定？')) return;
-      await api(`/api/mailboxes/${encodeURIComponent(id)}`, {method:'DELETE'});
-      log('已删除：' + id);
-      await refresh();
+    async function deleteMailbox(id, button) {
+      const row = lastMailboxes.find(x => x.id === id);
+      const selector = $('deleteChannel-' + id);
+      const channel = selector ? selector.value : '';
+      const mode = {local:'仅清理本地记录', auto:'自动接口', apple_account:'只用新接口', icloud_web:'只用旧接口'}[channel];
+      if (!row) return;
+      if (!mode) { alert('请先选择删除方式'); return; }
+      const scope = channel === 'local' ? '仅删除本地邮箱记录、API 及缓存邮件，不调用 Apple 接口，不删除远端地址或邮件。' : '将先停用、再永久删除 iCloud 远端地址，远端删除成功后清理本地邮箱记录、API 及验证码缓存。';
+      const policy = channel === 'auto' ? '\n自动接口先用新接口，失败后尝试旧接口。' : '';
+      if (!confirm(`${mode}\n邮箱：${row.email}\n${scope}${policy}\n此操作不可恢复。`)) return;
+      button.disabled = true;
+      selector.disabled = true;
+      try {
+        const suffix = channel === 'local' ? '' : '/remote?channel=' + encodeURIComponent(channel);
+        await api(`/api/mailboxes/${encodeURIComponent(id)}${suffix}`, {method:'DELETE'});
+        log(`${mode}成功：` + row.email);
+      } catch (err) {
+        log(`${mode}失败：` + err.message);
+      } finally {
+        button.disabled = false;
+        selector.disabled = false;
+        await refresh();
+      }
     }
 
     async function copyMailboxValue(id, mode) {

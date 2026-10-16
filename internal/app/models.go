@@ -72,6 +72,7 @@ type Account struct {
 }
 
 type Mailbox struct {
+	AppleAccountID    string    `json:"apple_account_id,omitempty"`
 	ID                string    `json:"id"`
 	OwnerID           string    `json:"owner_id,omitempty"`
 	AccountID         string    `json:"account_id"`

@@ -810,6 +810,17 @@ func (s *FileStore) SetMailboxLastCode(id string, messageID string, servedAt tim
 	return s.state.Mailboxes[idx], s.saveLocked()
 }
 
+func (s *FileStore) SetMailboxAppleAccountID(id, remoteID string) (Mailbox, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	idx := s.mailboxIndexLocked(id)
+	if idx < 0 {
+		return Mailbox{}, errCode("mailbox_not_found", "邮箱不存在", false)
+	}
+	s.state.Mailboxes[idx].AppleAccountID = strings.TrimSpace(remoteID)
+	return s.state.Mailboxes[idx], s.saveLocked()
+}
+
 func (s *FileStore) DeleteMailbox(id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

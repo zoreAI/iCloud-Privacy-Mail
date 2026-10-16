@@ -350,6 +350,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/v1/health", s.handleHealth)
 	s.mux.HandleFunc("POST /api/v1/mailboxes/claim", s.handleClaimMailbox)
 	s.mux.HandleFunc("POST /api/v1/mailboxes/lookup", s.handleLookupMailboxes)
+	s.mux.HandleFunc("DELETE /api/v1/mailboxes/{email}", s.handleDeleteMailboxByEmailAPI)
 	s.mux.HandleFunc("GET /api/runtime/export", s.handleExportRuntimeData)
 	s.mux.HandleFunc("GET /api/runtime/export-mailbox-apis", s.handleExportMailboxAPIs)
 	s.mux.HandleFunc("GET /api/runtime/export-mailbox-emails", s.handleExportMailboxEmails)
@@ -378,6 +379,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/mailboxes/{id}/sync", s.handleSyncMailbox)
 	s.mux.HandleFunc("POST /api/mailboxes/{id}/remote-clean", s.handleCleanRemoteMailbox)
 	s.mux.HandleFunc("DELETE /api/mailboxes/{id}", s.handleDeleteMailbox)
+	s.mux.HandleFunc("DELETE /api/mailboxes/{id}/remote", s.handleDeleteRemoteMailbox)
 	s.mux.HandleFunc("GET /api/mailboxes/{id}/messages", s.handleListMessages)
 	s.mux.HandleFunc("POST /api/mailboxes/{id}/messages", s.handleCreateMessage)
 	s.mux.HandleFunc("GET /api/mailboxes/{id}/code", s.handleMailboxCodeByID)
@@ -733,6 +735,38 @@ func (s *Server) handleLookupMailboxes(w http.ResponseWriter, r *http.Request) {
 		"mailboxes": mailboxes,
 		"missing":   missing,
 	})
+}
+
+func (s *Server) handleDeleteMailboxByEmailAPI(w http.ResponseWriter, r *http.Request) {
+	if !s.authorizedGlobalAPI(r) {
+		writeError(w, http.StatusUnauthorized, errCode("global_api_key_required", "删除邮箱需要配置并提交全局 API Key", false))
+		return
+	}
+	email, err := url.PathUnescape(r.PathValue("email"))
+	if err != nil || strings.TrimSpace(email) == "" {
+		writeError(w, http.StatusBadRequest, errCode("mailbox_email_missing", "邮箱地址无效", false))
+		return
+	}
+	var matches []Mailbox
+	for _, mailbox := range s.store.Snapshot().Mailboxes {
+		if strings.EqualFold(strings.TrimSpace(mailbox.Email), strings.TrimSpace(email)) {
+			matches = append(matches, mailbox)
+		}
+	}
+	if len(matches) == 0 {
+		writeError(w, http.StatusNotFound, errCode("mailbox_not_found", "本地邮箱记录不存在", false))
+		return
+	}
+	if len(matches) != 1 {
+		writeError(w, http.StatusConflict, errCode("mailbox_email_ambiguous", "本地存在多个相同邮箱记录，无法安全删除", false))
+		return
+	}
+	r.SetPathValue("id", matches[0].ID)
+	if r.URL.Query().Get("channel") == "local" {
+		s.handleDeleteMailbox(w, r)
+		return
+	}
+	s.handleDeleteRemoteMailbox(w, r)
 }
 
 func (s *Server) handleExportRuntimeData(w http.ResponseWriter, r *http.Request) {
@@ -1777,11 +1811,22 @@ func (s *Server) handleCreateAccount(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleListMailboxes(w http.ResponseWriter, r *http.Request) {
+	from, until, err := mailboxCreatedRange(r.URL.Query())
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	status := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("status")))
+	if status != "" && status != "all" && !validMailboxStatus(status) {
+		writeError(w, http.StatusBadRequest, errCode("invalid_status", "状态只能是 available、used、failed、active、disabled", false))
+		return
+	}
 	state := s.scopedState(r)
 	accountsByID := mailboxAccountMap(state.Accounts)
 	base := filterMailboxesByOwner(state.Mailboxes, strings.TrimSpace(r.URL.Query().Get("owner_id")), scopedOwnerID(r, s.store), s.isAdminRequest(r))
 	groups := publicMailboxGroups(base, accountsByID)
 	filtered := filterMailboxesForList(base, accountsByID, r.URL.Query())
+	filtered = filterMailboxCreatedRange(filtered, from, until)
 	sortMailboxesForList(filtered, accountsByID)
 
 	page, pageSize, paged := mailboxListPagination(r)
@@ -1808,6 +1853,44 @@ func (s *Server) handleListMailboxes(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, response)
 }
 
+// Dates are inclusive calendar days in Beijing time, independent of server TZ.
+func mailboxCreatedRange(values url.Values) (time.Time, time.Time, error) {
+	zone := time.FixedZone("Asia/Shanghai", 8*60*60)
+	var bounds [2]time.Time
+	for i, key := range []string{"created_from", "created_to"} {
+		value := strings.TrimSpace(values.Get(key))
+		if value == "" {
+			continue
+		}
+		date, err := time.ParseInLocation("2006-01-02", value, zone)
+		if err != nil {
+			return time.Time{}, time.Time{}, errCode("invalid_created_range", "创建日期格式必须为 YYYY-MM-DD", false)
+		}
+		bounds[i] = date
+	}
+	if !bounds[0].IsZero() && !bounds[1].IsZero() && bounds[0].After(bounds[1]) {
+		return time.Time{}, time.Time{}, errCode("invalid_created_range", "开始日期不能晚于结束日期", false)
+	}
+	if !bounds[1].IsZero() {
+		bounds[1] = bounds[1].AddDate(0, 0, 1)
+	}
+	return bounds[0], bounds[1], nil
+}
+
+func filterMailboxCreatedRange(rows []Mailbox, from, until time.Time) []Mailbox {
+	if from.IsZero() && until.IsZero() {
+		return rows
+	}
+	out := make([]Mailbox, 0, len(rows))
+	for _, row := range rows {
+		if row.CreatedAt.IsZero() || (!from.IsZero() && row.CreatedAt.Before(from)) || (!until.IsZero() && !row.CreatedAt.Before(until)) {
+			continue
+		}
+		out = append(out, row)
+	}
+	return out
+}
+
 func filterMailboxesByOwner(mailboxes []Mailbox, ownerFilter, scopedOwner string, admin bool) []Mailbox {
 	ownerFilter = strings.TrimSpace(ownerFilter)
 	if ownerFilter == "" || ownerFilter == "all" {
@@ -1831,9 +1914,13 @@ func filterMailboxesByOwner(mailboxes []Mailbox, ownerFilter, scopedOwner string
 func filterMailboxesForList(mailboxes []Mailbox, accountsByID map[string]Account, values url.Values) []Mailbox {
 	accountKey := strings.TrimSpace(firstNonEmpty(values.Get("account_key"), values.Get("account_id")))
 	keyword := strings.ToLower(strings.TrimSpace(firstNonEmpty(values.Get("search"), values.Get("q"))))
+	status := strings.ToLower(strings.TrimSpace(values.Get("status")))
 	out := make([]Mailbox, 0, len(mailboxes))
 	for _, mailbox := range mailboxes {
-		if keyword == "" && accountKey != "" && accountKey != "all" && !constantTimeEqual(mailboxListAccountKey(mailbox, accountsByID), accountKey) {
+		if accountKey != "" && accountKey != "all" && !constantTimeEqual(mailboxListAccountKey(mailbox, accountsByID), accountKey) {
+			continue
+		}
+		if status != "" && status != "all" && !strings.EqualFold(mailbox.Status, status) {
 			continue
 		}
 		if keyword != "" && !mailboxListMatchesSearch(mailbox, accountsByID, keyword) {
@@ -1890,7 +1977,7 @@ func paginateMailboxes(mailboxes []Mailbox, page, pageSize int) []Mailbox {
 
 func mailboxListPagination(r *http.Request) (int, int, bool) {
 	values := r.URL.Query()
-	paged := values.Has("page") || values.Has("page_size") || values.Has("search") || values.Has("q") || values.Has("account_key") || values.Has("account_id") || values.Has("owner_id")
+	paged := values.Has("page") || values.Has("page_size") || values.Has("search") || values.Has("q") || values.Has("account_key") || values.Has("account_id") || values.Has("owner_id") || values.Has("status")
 	page := parseBoundedPositiveInt(values.Get("page"), 1, 1, 1_000_000)
 	pageSize := parseBoundedPositiveInt(values.Get("page_size"), mailboxListDefaultPageSize, 1, mailboxListMaxPageSize)
 	return page, pageSize, paged
@@ -2190,6 +2277,86 @@ func (s *Server) handleCleanRemoteMailboxes(w http.ResponseWriter, r *http.Reque
 		"mailboxes":        handledMailboxes,
 		"failed_mailboxes": failedMailboxes,
 	})
+}
+
+func (s *Server) handleDeleteRemoteMailbox(w http.ResponseWriter, r *http.Request) {
+	mailbox, ok := s.store.FindMailboxByID(r.PathValue("id"))
+	if !ok || !s.canAccessMailbox(r, mailbox) {
+		writeError(w, http.StatusNotFound, errCode("mailbox_not_found", "邮箱不存在", false))
+		return
+	}
+	channel := strings.TrimSpace(r.URL.Query().Get("channel"))
+	if channel == "auto" {
+		channel = ""
+	}
+	if channel != "" && channel != "icloud_web" && channel != "apple_account" {
+		writeError(w, http.StatusBadRequest, errCode("invalid_delete_channel", "删除渠道仅支持自动选择、apple_account 或 icloud_web", false))
+		return
+	}
+	// Do not fall back to another account for a destructive operation.
+	if strings.TrimSpace(mailbox.AccountID) == "" {
+		writeError(w, http.StatusBadRequest, errCode("account_missing", "请先同步邮箱并绑定 Apple 账号", false))
+		return
+	}
+	session, ok := s.sessionForOwnerAccount(mailbox.OwnerID, mailbox.AccountID)
+	if channel != "icloud_web" && ok && appleAccountManageReady(session) {
+		if err := s.deleteAppleAccountMailbox(r, mailbox, session); err == nil {
+			writeJSON(w, http.StatusOK, map[string]any{"success": true, "remote_deleted": true, "channel": "apple_account"})
+			return
+		} else if channel == "apple_account" {
+			writeError(w, http.StatusBadGateway, err)
+			return
+		} else {
+			s.logger.Warn("Apple Account mailbox delete failed; falling back to iCloud Web", "mailbox_id", mailbox.ID, "err", err)
+		}
+	}
+	if channel == "apple_account" {
+		writeError(w, http.StatusBadRequest, errCode("apple_account_session_missing", "新接口删除需要该账号的 Apple Account 登录态", true))
+		return
+	}
+	if !ok || !iCloudWebLoginSaved(session) {
+		writeError(w, http.StatusBadRequest, errCode("icloud_session_missing", "远端删除需要该账号的旧 iCloud Web 登录态", true))
+		return
+	}
+	client := NewICloudClient()
+	// Resolve the ID from this account's current list. Apple Account IDs and
+	// legacy HME IDs must not be assumed interchangeable.
+	remotes, err := client.ListPrivacyMailboxes(r.Context(), session)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err)
+		return
+	}
+	var matches []ICloudRemoteMailbox
+	for _, remote := range remotes {
+		if strings.EqualFold(remote.Email, mailbox.Email) {
+			matches = append(matches, remote)
+		}
+	}
+	if len(matches) != 1 || strings.TrimSpace(matches[0].AnonymousID) == "" {
+		writeError(w, http.StatusConflict, errCode("remote_mailbox_unresolved", "未唯一匹配到远端邮箱，保留本地记录，请同步后重试", false))
+		return
+	}
+	remote := matches[0]
+	if remote.IsActive {
+		if err := client.DeactivatePrivacyMailbox(r.Context(), session, remote.AnonymousID); err != nil {
+			writeError(w, http.StatusBadGateway, err)
+			return
+		}
+	}
+	inactive := false
+	if _, err := s.store.SetMailboxStatus(mailbox.ID, &inactive, &inactive, StatusDisabled, "远端已停用，等待删除"); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	if err := client.DeletePrivacyMailbox(r.Context(), session, remote.AnonymousID); err != nil {
+		writeError(w, http.StatusBadGateway, errCode("remote_delete_failed", "远端已停用，但删除未确认；本地记录保留，可重试："+err.Error(), true))
+		return
+	}
+	if err := s.store.DeleteMailbox(mailbox.ID); err != nil {
+		writeError(w, http.StatusInternalServerError, errCode("local_delete_failed", "远端已删除，但本地清理失败："+err.Error(), false))
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"success": true, "remote_deleted": true})
 }
 
 func (s *Server) handleDeleteMailbox(w http.ResponseWriter, r *http.Request) {
@@ -3473,6 +3640,12 @@ func (s *Server) createICloudMailboxForOwner(ctx context.Context, ownerID, accou
 	if err != nil {
 		return Mailbox{}, remote, err
 	}
+	if remote.Origin == "APPLE_ACCOUNT" && remote.AnonymousID != "" {
+		mailbox, err = s.store.SetMailboxAppleAccountID(mailbox.ID, remote.AnonymousID)
+		if err != nil {
+			return Mailbox{}, remote, err
+		}
+	}
 	if storeNote != "" {
 		updated, updateErr := s.store.SetMailboxStatus(mailbox.ID, nil, nil, StatusAvailable, storeNote)
 		if updateErr == nil {
@@ -4206,6 +4379,9 @@ func (s *Server) requiresAdmin(r *http.Request) bool {
 		return false
 	}
 	if r.Method == http.MethodPost && r.URL.Path == "/api/v1/mailboxes/lookup" {
+		return false
+	}
+	if r.Method == http.MethodDelete && strings.HasPrefix(r.URL.Path, "/api/v1/mailboxes/") {
 		return false
 	}
 	if r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/api/v1/mailboxes/") && strings.HasSuffix(r.URL.Path, "/code") {

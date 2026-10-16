@@ -654,6 +654,22 @@ func (c *ICloudClient) ListPrivacyMailboxes(ctx context.Context, session ICloudS
 	return remotes, nil
 }
 
+func (c *ICloudClient) DeactivatePrivacyMailbox(ctx context.Context, session ICloudSession, anonymousID string) error {
+	return c.mutatePrivacyMailbox(ctx, session, "/v1/hme/deactivate", anonymousID)
+}
+
+func (c *ICloudClient) DeletePrivacyMailbox(ctx context.Context, session ICloudSession, anonymousID string) error {
+	return c.mutatePrivacyMailbox(ctx, session, "/v1/hme/delete", anonymousID)
+}
+
+func (c *ICloudClient) mutatePrivacyMailbox(ctx context.Context, session ICloudSession, path, anonymousID string) error {
+	if strings.TrimSpace(anonymousID) == "" {
+		return errCode("icloud_hme_id_missing", "缺少远端 anonymousId，未执行操作", false)
+	}
+	// Mutations are not automatically retried after an ambiguous network failure.
+	return c.call(ctx, session, http.MethodPost, path, map[string]string{"anonymousId": strings.TrimSpace(anonymousID)}, nil)
+}
+
 func (c *ICloudClient) generate(ctx context.Context, session ICloudSession) (string, error) {
 	var out struct {
 		HME string `json:"hme"`
@@ -1304,7 +1320,7 @@ func (c *ICloudClient) SyncMailboxMessages(ctx context.Context, session ICloudSe
 				continue
 			}
 			text := thread.Subject + "\n" + thread.Preview
-			if !looksLikeVerificationText(text, keyword) {
+			if strings.TrimSpace(keyword) != "__all__" && !looksLikeVerificationText(text, keyword) {
 				continue
 			}
 			messages, err := c.threadMessages(ctx, session, folder, thread.ThreadID, mailbox.Email, queryAfter)
@@ -1365,7 +1381,7 @@ func (c *ICloudClient) SyncMailboxMessagesBatch(ctx context.Context, session ICl
 				continue
 			}
 			text := thread.Subject + "\n" + thread.Preview
-			if !looksLikeVerificationText(text, keyword) {
+			if strings.TrimSpace(keyword) != "__all__" && !looksLikeVerificationText(text, keyword) {
 				continue
 			}
 			messagesByMailbox, err := c.threadMessagesForAliases(ctx, session, folder, thread.ThreadID, aliases, afterByMailbox)
