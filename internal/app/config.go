@@ -55,7 +55,7 @@ func LoadConfig(path string) (Config, error) {
 		PublicFastSyncWaitMS:         envPositiveInt("PUBLIC_FAST_SYNC_WAIT_MS", 600),
 		PublicSyncMinIntervalMS:      envPositiveInt("PUBLIC_SYNC_MIN_INTERVAL_MS", 3000),
 		UpdateEnabled:                envBool("IPM_UPDATE_ENABLED", true),
-		UpdateRepository:             firstNonEmptyString(strings.TrimSpace(os.Getenv("IPM_UPDATE_REPOSITORY")), "q1953258942/iCloud-Privacy-Mail"),
+		UpdateRepository:             firstNonEmptyString(strings.TrimSpace(os.Getenv("IPM_UPDATE_REPOSITORY")), "zoreAI/iCloud-Privacy-Mail"),
 		UpdateManifestURL:            strings.TrimSpace(os.Getenv("IPM_UPDATE_MANIFEST_URL")),
 		UpdateAssetName:              strings.TrimSpace(os.Getenv("IPM_UPDATE_ASSET_NAME")),
 	}
